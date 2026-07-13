@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RouteAtlas</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --explorer: #E8720C;        /* OS Explorer cover orange */
+    --ink: #22261F;
+    --ink-soft: #5A6052;
+    --paper: #FAF8F3;
+    --paper-edge: #EDE9DF;
+    --line: #DDD8CB;
+    --danger: #B3261E;
+    --radius: 6px;
+    --sidebar-w: 320px;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--ink);
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ---------- Sidebar ---------- */
+  #sidebar {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    height: 100%;
+    background: var(--paper);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    z-index: 1000;
+  }
+  #sidebar.collapsed { display: none; }
+
+  header {
+    padding: 14px 16px 12px;
+    border-bottom: 2px solid var(--explorer);
+  }
+  header h1 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+  header h1 span { color: var(--explorer); }
+  header .sub {
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 2px;
+  }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    font-size: 0.85rem;
+  }
+  button:hover { border-color: var(--ink-soft); }
+  button:focus-visible { outline: 2px solid var(--explorer); outline-offset: 1px; }
+  button.primary {
+    background: var(--explorer);
+    border-color: var(--explorer);
+    color: #fff;
+    font-weight: 600;
+  }
+  button.primary:hover { background: #CF6608; }
+  button.icon {
+    padding: 6px 8px;
+    line-height: 1;
+  }
+  button.danger { color: var(--danger); }
+
+  #groupList {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0 24px;
+  }
+  .empty-state {
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--ink-soft);
+    font-size: 0.9rem;
+    line-height: 1.5;
+  }
+
+  .group { border-bottom: 1px solid var(--paper-edge); }
+  .group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px 8px 16px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .group-header:hover { background: #F3F0E7; }
+  .swatch {
+    width: 22px;
+    height: 8px;
+    border-radius: 4px;
+    flex: none;
+    cursor: pointer;
+    border: 1px solid rgba(0,0,0,0.15);
+  }
+  .group-name {
+    flex: 1;
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .group-count {
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+  }
+  .mini {
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    border-radius: 4px;
+  }
+  .mini:hover { color: var(--ink); background: var(--paper-edge); border: none; }
+  .mini.off { opacity: 0.35; }
+
+  .route-list { display: none; }
+  .group.open .route-list { display: block; }
+  .route {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 12px 5px 30px;
+    font-size: 0.83rem;
+  }
+  .route:hover { background: #F3F0E7; }
+  .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex: none;
+    cursor: pointer;
+    border: 1px solid rgba(0,0,0,0.2);
+  }
+  .dot.overridden { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px var(--ink-soft); }
+  .route-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .route.hidden-route .route-name { color: var(--ink-soft); font-style: italic; }
+  .route-dist { font-size: 0.72rem; color: var(--ink-soft); flex: none; }
+
+  footer {
+    padding: 8px 16px;
+    border-top: 1px solid var(--line);
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  /* ---------- Map ---------- */
+  #map { flex: 1; height: 100%; background: #DCE8DC; }
+  #sidebarToggle {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 1001;
+    display: none;
+  }
+  body.sidebar-hidden #sidebarToggle { display: block; }
+
+  /* ---------- Modals ---------- */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(30, 32, 26, 0.45);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+  }
+  .modal-backdrop.show { display: flex; }
+  .modal {
+    background: var(--paper);
+    border-radius: 10px;
+    padding: 20px 22px;
+    width: min(420px, 92vw);
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+  }
+  .modal h2 { font-size: 1.05rem; margin-bottom: 12px; }
+  .modal label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink-soft);
+    margin: 12px 0 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .modal input[type=text], .modal input[type=password], .modal select {
+    width: 100%;
+    font: inherit;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: #fff;
+  }
+  .modal .row { display: flex; gap: 10px; align-items: center; }
+  .modal .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 18px;
+  }
+  .modal .note { font-size: 0.78rem; color: var(--ink-soft); margin-top: 8px; line-height: 1.45; }
+  .modal .note a { color: var(--explorer); }
+  progress { width: 100%; height: 10px; margin-top: 6px; }
+  #importStatus { font-size: 0.82rem; margin-top: 8px; color: var(--ink-soft); }
+  #importSummary { font-size: 0.83rem; line-height: 1.5; margin-top: 10px; display: none; }
+  #importSummary .fail { color: var(--danger); }
+  #newGroupFields { display: none; margin-top: 4px; }
+
+  /* Leaflet popup tweaks */
+  .leaflet-popup-content { font-family: inherit; font-size: 0.83rem; margin: 10px 14px; }
+  .leaflet-popup-content b { font-size: 0.9rem; }
+  .popup-stats { color: var(--ink-soft); margin-top: 4px; }
+
+  @media (max-width: 700px) {
+    :root { --sidebar-w: 260px; }
+  }
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <header>
+    <h1>Route<span>Atlas</span></h1>
+    <div class="sub">GPX route library · OS mapping</div>
+  </header>
+  <div class="toolbar">
+    <button class="primary" id="btnImport">Import GPX</button>
+    <button id="btnFitAll" title="Zoom to all visible routes">Fit all</button>
+    <button class="icon" id="btnSettings" title="Settings">&#9881;</button>
+    <button class="icon" id="btnHideSidebar" title="Hide sidebar">&#171;</button>
+  </div>
+  <div id="groupList"></div>
+  <footer>
+    <span id="footerStats"></span>
+    <span id="baseLayerLabel"></span>
+  </footer>
+</aside>
+
+<div id="map"></div>
+<button id="sidebarToggle" title="Show sidebar">&#187;</button>
+
+<input type="file" id="fileInput" accept=".gpx" multiple hidden>
+<input type="color" id="colourInput" style="position:fixed;left:-100px;top:-100px;width:1px;height:1px;opacity:0;">
+
+<!-- Import dialogue -->
+<div class="modal-backdrop" id="importModal">
+  <div class="modal">
+    <h2>Import routes</h2>
+    <div id="importPicker">
+      <div id="importFileCount" style="font-size:0.85rem;"></div>
+      <label for="importGroupSelect">Add to group</label>
+      <select id="importGroupSelect"></select>
+      <div id="newGroupFields">
+        <label for="newGroupName">New group name</label>
+        <div class="row">
+          <input type="text" id="newGroupName" placeholder="e.g. Wainwrights Book 1">
+          <input type="color" id="newGroupColour" value="#E8720C" title="Group colour" style="width:44px;height:34px;padding:2px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer;">
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btnImportCancel">Cancel</button>
+        <button class="primary" id="btnImportGo">Import</button>
+      </div>
+    </div>
+    <div id="importProgress" style="display:none;">
+      <progress id="importBar" max="100" value="0"></progress>
+      <div id="importStatus"></div>
+      <div id="importSummary"></div>
+      <div class="actions" id="importDoneActions" style="display:none;">
+        <button class="primary" id="btnImportClose">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings -->
+<div class="modal-backdrop" id="settingsModal">
+  <div class="modal">
+    <h2>Settings</h2>
+    <label for="osKeyInput">OS Maps API key</label>
+    <input type="password" id="osKeyInput" placeholder="Paste your OS Data Hub project key" autocomplete="off">
+    <div class="note">
+      Free key from <a href="https://osdatahub.os.uk" target="_blank" rel="noopener">osdatahub.os.uk</a> —
+      create a project and add the <b>OS Maps API</b>. The Outdoor style used here is OpenData.
+      Without a key, RouteAtlas falls back to OpenStreetMap.
+    </div>
+    <label>Danger zone</label>
+    <button class="danger" id="btnClearAll">Delete all routes and groups</button>
+    <div class="actions">
+      <button id="btnSettingsCancel">Cancel</button>
+      <button class="primary" id="btnSettingsSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+"use strict";
+
+/* ---------- Visible error reporting (no DevTools needed) ---------- */
+function showBanner(msg) {
+  let b = document.getElementById("errBanner");
+  if (!b) {
+    b = document.createElement("div");
+    b.id = "errBanner";
+    b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:5000;background:#B3261E;color:#fff;" +
+      "font:0.8rem/1.4 system-ui;padding:8px 12px;white-space:pre-wrap;";
+    document.body.appendChild(b);
+  }
+  b.textContent = msg;
+}
+window.addEventListener("error", (e) =>
+  showBanner("Error: " + (e.message || e.type) + (e.filename ? "" : "") + (e.lineno ? " (line " + e.lineno + ")" : "")));
+window.addEventListener("unhandledrejection", (e) =>
+  showBanner("Error: " + (e.reason && e.reason.message ? e.reason.message : String(e.reason))));
+
+/* Feature detection — sandboxed previews block these */
+function storageAvailable() {
+  try { localStorage.setItem("__t", "1"); localStorage.removeItem("__t"); }
+  catch (e) { return "localStorage blocked"; }
+  if (!window.indexedDB) return "IndexedDB unavailable";
+  return null;
+}
+
+/* =========================================================
+   RouteAtlas P1 — single-file GPX atlas
+   Storage: IndexedDB (groups, routes) · localStorage (settings)
+   ========================================================= */
+
+/* ---------- Constants ---------- */
+const DB_NAME = "routeatlas";
+const DB_VERSION = 1;
+const LS_KEY = "routeatlas.settings";
+const SIMPLIFY_TOLERANCE = 0.00008;   // degrees, ~9 m
+const ASCENT_HYSTERESIS = 5;          // metres
+const PALETTE = ["#E8720C","#1D6FB8","#2E8B57","#C2185B","#6A1FB1",
+                 "#B8860B","#008080","#B3261E","#4B6F1D","#5C4033",
+                 "#3949AB","#D81B60"];
+
+/* ---------- State ---------- */
+let db = null;
+let map = null;
+let groups = [];                  // [{id,name,colour,visible}]
+let routes = [];                  // [{id,groupId,name,gpxText,polyline,colourOverride,stats,visible}]
+let layerById = new Map();        // routeId -> L.polyline
+let settings = { osKey: "" };
+let pendingFiles = [];
+let openGroups = new Set();
+
+/* ---------- IndexedDB wrapper ---------- */
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains("groups")) d.createObjectStore("groups", { keyPath: "id" });
+      if (!d.objectStoreNames.contains("routes")) {
+        const s = d.createObjectStore("routes", { keyPath: "id" });
+        s.createIndex("groupId", "groupId");
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function tx(store, mode, fn) {
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, mode);
+    const result = fn(t.objectStore(store));
+    t.oncomplete = () => resolve(result);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  });
+}
+function getAll(store) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store).objectStore(store).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+const putGroup   = (g)  => tx("groups", "readwrite", s => s.put(g));
+const delGroup   = (id) => tx("groups", "readwrite", s => s.delete(id));
+const putRoute   = (r)  => tx("routes", "readwrite", s => s.put(r));
+const delRoute   = (id) => tx("routes", "readwrite", s => s.delete(id));
+function bulkPutRoutes(list) {
+  return tx("routes", "readwrite", s => list.forEach(r => s.put(r)));
+}
+
+/* ---------- Settings ---------- */
+function loadSettings() {
+  try { Object.assign(settings, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); }
+  catch (e) { /* ignore corrupt settings */ }
+}
+function saveSettings() { localStorage.setItem(LS_KEY, JSON.stringify(settings)); }
+
+/* ---------- Geometry ---------- */
+function haversine(a, b) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * rad, dLon = (b[1] - a[1]) * rad;
+  const s = Math.sin(dLat/2)**2 +
+            Math.cos(a[0]*rad) * Math.cos(b[0]*rad) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+/* Douglas–Peucker on [lat,lng] pairs (degree-space perpendicular distance) */
+function simplify(points, tol) {
+  if (points.length < 3) return points;
+  const keep = new Uint8Array(points.length);
+  keep[0] = keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [i0, i1] = stack.pop();
+    let maxD = 0, idx = -1;
+    const [x0, y0] = points[i0], [x1, y1] = points[i1];
+    const dx = x1 - x0, dy = y1 - y0;
+    const len2 = dx*dx + dy*dy;
+    for (let i = i0 + 1; i < i1; i++) {
+      const [px, py] = points[i];
+      let d;
+      if (len2 === 0) d = Math.hypot(px - x0, py - y0);
+      else {
+        const t = Math.max(0, Math.min(1, ((px - x0)*dx + (py - y0)*dy) / len2));
+        d = Math.hypot(px - (x0 + t*dx), py - (y0 + t*dy));
+      }
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > tol) {
+      keep[idx] = 1;
+      stack.push([i0, idx], [idx, i1]);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < points.length; i++) if (keep[i]) out.push(points[i]);
+  return out;
+}
+
+/* ---------- GPX parsing ---------- */
+function parseGPX(text, filename) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error("Invalid XML");
+  const pts = doc.getElementsByTagName("trkpt");
+  let source = pts;
+  if (!pts.length) {
+    const rte = doc.getElementsByTagName("rtept");
+    if (!rte.length) throw new Error("No track or route points");
+    source = rte;
+  }
+  const full = [];   // [lat, lng]
+  const eles = [];
+  for (const p of source) {
+    const lat = parseFloat(p.getAttribute("lat"));
+    const lon = parseFloat(p.getAttribute("lon"));
+    if (isNaN(lat) || isNaN(lon)) continue;
+    full.push([lat, lon]);
+    const e = p.getElementsByTagName("ele")[0];
+    eles.push(e ? parseFloat(e.textContent) : null);
+  }
+  if (full.length < 2) throw new Error("Fewer than 2 valid points");
+
+  // distance
+  let dist = 0;
+  for (let i = 1; i < full.length; i++) dist += haversine(full[i-1], full[i]);
+
+  // ascent with hysteresis
+  let ascent = 0, base = null;
+  for (const e of eles) {
+    if (e === null || isNaN(e)) continue;
+    if (base === null) { base = e; continue; }
+    if (e > base + ASCENT_HYSTERESIS) { ascent += e - base; base = e; }
+    else if (e < base) base = e;
+  }
+
+  const nameEl = doc.querySelector("trk > name") || doc.querySelector("metadata > name") || doc.querySelector("rte > name");
+  const name = (nameEl && nameEl.textContent.trim()) || filename.replace(/\.gpx$/i, "");
+
+  return {
+    name,
+    polyline: simplify(full, SIMPLIFY_TOLERANCE),
+    stats: { distance: dist, ascent: Math.round(ascent), points: full.length }
+  };
+}
+
+/* ---------- Colour helpers ---------- */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const groupById = (id) => groups.find(g => g.id === id);
+const effectiveColour = (r) => r.colourOverride || (groupById(r.groupId)?.colour ?? "#888");
+const nextPaletteColour = () => PALETTE[groups.length % PALETTE.length];
+const fmtKm = (m) => (m / 1000).toFixed(1) + " km";
+
+/* ---------- Map ---------- */
+function initMap() {
+  map = L.map("map", { zoomControl: true }).setView([54.5, -2.5], 6);
+  setBaseLayer();
+}
+let baseLayer = null;
+function setBaseLayer() {
+  if (baseLayer) map.removeLayer(baseLayer);
+  if (settings.osKey) {
+    baseLayer = L.tileLayer(
+      `https://api.os.uk/maps/raster/v1/zxy/Outdoor_3857/{z}/{x}/{y}.png?key=${encodeURIComponent(settings.osKey)}`,
+      { maxZoom: 20, attribution: "Contains OS data &copy; Crown copyright and database rights " + new Date().getFullYear() }
+    );
+    document.getElementById("baseLayerLabel").textContent = "OS Outdoor";
+  } else {
+    baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" });
+    document.getElementById("baseLayerLabel").textContent = "OSM (no OS key)";
+  }
+  baseLayer.addTo(map);
+}
+
+function routePopupHTML(r) {
+  const g = groupById(r.groupId);
+  return `<b>${escapeHTML(r.name)}</b><br>` +
+         `<span style="color:${effectiveColour(r)};font-weight:600;">&#9644;</span> ${escapeHTML(g ? g.name : "—")}` +
+         `<div class="popup-stats">${fmtKm(r.stats.distance)} · ${r.stats.ascent} m ascent · ${r.stats.points} pts</div>`;
+}
+function escapeHTML(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+function addRouteLayer(r) {
+  const line = L.polyline(r.polyline, {
+    color: effectiveColour(r), weight: 3, opacity: 0.9
+  });
+  line.bindPopup(() => routePopupHTML(r));
+  line.on("mouseover", () => { line.setStyle({ weight: 5 }); line.bringToFront(); });
+  line.on("mouseout",  () => line.setStyle({ weight: 3 }));
+  layerById.set(r.id, line);
+  syncRouteLayer(r);
+}
+function syncRouteLayer(r) {
+  const line = layerById.get(r.id);
+  if (!line) return;
+  const g = groupById(r.groupId);
+  const show = r.visible && g && g.visible;
+  if (show && !map.hasLayer(line)) line.addTo(map);
+  if (!show && map.hasLayer(line)) map.removeLayer(line);
+  line.setStyle({ color: effectiveColour(r) });
+}
+function syncAllLayers() { routes.forEach(syncRouteLayer); }
+
+function fitRoutes(list) {
+  const visible = list.filter(r => {
+    const g = groupById(r.groupId);
+    return r.visible && g && g.visible;
+  });
+  if (!visible.length) return;
+  let bounds = null;
+  for (const r of visible) {
+    const b = L.latLngBounds(r.polyline);
+    bounds = bounds ? bounds.extend(b) : b;
+  }
+  map.fitBounds(bounds, { padding: [30, 30] });
+}
+
+/* ---------- Sidebar rendering ---------- */
+function render() {
+  const el = document.getElementById("groupList");
+  el.innerHTML = "";
+  if (!groups.length) {
+    el.innerHTML = `<div class="empty-state">No routes yet.<br>Click <b>Import GPX</b> and select all the files for a group at once.</div>`;
+  }
+  for (const g of groups) {
+    const gRoutes = routes.filter(r => r.groupId === g.id)
+                          .sort((a, b) => a.name.localeCompare(b.name));
+    const div = document.createElement("div");
+    div.className = "group" + (openGroups.has(g.id) ? " open" : "");
+
+    const head = document.createElement("div");
+    head.className = "group-header";
+    head.innerHTML = `
+      <span class="swatch" style="background:${g.colour}" title="Change group colour"></span>
+      <span class="group-name" title="Double-click to rename">${escapeHTML(g.name)}</span>
+      <span class="group-count">${gRoutes.length}</span>
+      <button class="mini ${g.visible ? "" : "off"}" data-act="vis" title="Show/hide group">&#128065;</button>
+      <button class="mini" data-act="zoom" title="Zoom to group">&#8982;</button>
+      <button class="mini" data-act="del" title="Delete group">&#10005;</button>`;
+    head.addEventListener("click", (e) => onGroupHeaderClick(e, g, gRoutes));
+    head.querySelector(".group-name").addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      renameGroup(g);
+    });
+    div.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "route-list";
+    for (const r of gRoutes) {
+      const row = document.createElement("div");
+      row.className = "route" + (r.visible ? "" : " hidden-route");
+      row.innerHTML = `
+        <span class="dot ${r.colourOverride ? "overridden" : ""}" style="background:${effectiveColour(r)}"
+              title="${r.colourOverride ? "Custom colour — right-click to reset to group colour" : "Set custom colour"}"></span>
+        <span class="route-name" title="${escapeHTML(r.name)}">${escapeHTML(r.name)}</span>
+        <span class="route-dist">${fmtKm(r.stats.distance)}</span>
+        <button class="mini ${r.visible ? "" : "off"}" data-act="vis" title="Show/hide route">&#128065;</button>
+        <button class="mini" data-act="del" title="Delete route">&#10005;</button>`;
+      row.querySelector(".dot").addEventListener("click", (e) => { e.stopPropagation(); pickRouteColour(r); });
+      row.querySelector(".dot").addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        if (r.colourOverride) { r.colourOverride = null; putRoute(r); render(); syncRouteLayer(r); }
+      });
+      row.querySelector(".route-name").addEventListener("click", () => {
+        const line = layerById.get(r.id);
+        if (line) { fitRoutes([r]); line.openPopup(); }
+      });
+      row.querySelector('[data-act="vis"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        r.visible = !r.visible;
+        putRoute(r); render(); syncRouteLayer(r);
+      });
+      row.querySelector('[data-act="del"]').addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete route "${r.name}"?`)) return;
+        await delRoute(r.id);
+        routes = routes.filter(x => x.id !== r.id);
+        const line = layerById.get(r.id);
+        if (line) { map.removeLayer(line); layerById.delete(r.id); }
+        render();
+      });
+      list.appendChild(row);
+    }
+    div.appendChild(list);
+    el.appendChild(div);
+  }
+  const totalKm = routes.reduce((s, r) => s + r.stats.distance, 0);
+  document.getElementById("footerStats").textContent =
+    `${routes.length} routes · ${groups.length} groups · ${fmtKm(totalKm)}`;
+}
+
+function onGroupHeaderClick(e, g, gRoutes) {
+  const act = e.target.dataset && e.target.dataset.act;
+  if (e.target.classList.contains("swatch")) { pickGroupColour(g); return; }
+  if (act === "vis") {
+    g.visible = !g.visible;
+    putGroup(g); render(); syncAllLayers();
+    return;
+  }
+  if (act === "zoom") { fitRoutes(gRoutes); return; }
+  if (act === "del") { deleteGroup(g); return; }
+  // toggle expand
+  if (openGroups.has(g.id)) openGroups.delete(g.id); else openGroups.add(g.id);
+  render();
+}
+
+function renameGroup(g) {
+  const name = prompt("Rename group", g.name);
+  if (name && name.trim()) { g.name = name.trim(); putGroup(g); render(); }
+}
+async function deleteGroup(g) {
+  const n = routes.filter(r => r.groupId === g.id).length;
+  if (!confirm(`Delete group "${g.name}" and its ${n} route${n === 1 ? "" : "s"}?`)) return;
+  const doomed = routes.filter(r => r.groupId === g.id);
+  for (const r of doomed) {
+    await delRoute(r.id);
+    const line = layerById.get(r.id);
+    if (line) { map.removeLayer(line); layerById.delete(r.id); }
+  }
+  routes = routes.filter(r => r.groupId !== g.id);
+  await delGroup(g.id);
+  groups = groups.filter(x => x.id !== g.id);
+  openGroups.delete(g.id);
+  render();
+}
+
+/* ---------- Colour pickers (shared hidden input) ---------- */
+const colourInput = document.getElementById("colourInput");
+let colourTarget = null;
+colourInput.addEventListener("input", () => {
+  if (!colourTarget) return;
+  if (colourTarget.kind === "group") {
+    colourTarget.obj.colour = colourInput.value;
+    putGroup(colourTarget.obj);
+  } else {
+    colourTarget.obj.colourOverride = colourInput.value;
+    putRoute(colourTarget.obj);
+  }
+  render(); syncAllLayers();
+});
+function pickGroupColour(g) {
+  colourTarget = { kind: "group", obj: g };
+  colourInput.value = g.colour;
+  colourInput.click();
+}
+function pickRouteColour(r) {
+  colourTarget = { kind: "route", obj: r };
+  colourInput.value = effectiveColour(r);
+  colourInput.click();
+}
+
+/* ---------- Import flow ---------- */
+const importModal = document.getElementById("importModal");
+document.getElementById("btnImport").addEventListener("click", () =>
+  document.getElementById("fileInput").click());
+
+document.getElementById("fileInput").addEventListener("change", (e) => {
+  pendingFiles = [...e.target.files];
+  e.target.value = "";
+  if (!pendingFiles.length) return;
+  document.getElementById("importFileCount").textContent =
+    `${pendingFiles.length} file${pendingFiles.length === 1 ? "" : "s"} selected`;
+  const sel = document.getElementById("importGroupSelect");
+  sel.innerHTML = groups.map(g => `<option value="${g.id}">${escapeHTML(g.name)}</option>`).join("") +
+                  `<option value="__new__">New group…</option>`;
+  sel.value = groups.length ? groups[0].id : "__new__";
+  toggleNewGroupFields();
+  document.getElementById("newGroupColour").value = nextPaletteColour();
+  document.getElementById("importPicker").style.display = "";
+  document.getElementById("importProgress").style.display = "none";
+  document.getElementById("importSummary").style.display = "none";
+  document.getElementById("importDoneActions").style.display = "none";
+  showModal(importModal);
+});
+
+document.getElementById("importGroupSelect").addEventListener("change", toggleNewGroupFields);
+function toggleNewGroupFields() {
+  const isNew = document.getElementById("importGroupSelect").value === "__new__";
+  document.getElementById("newGroupFields").style.display = isNew ? "block" : "none";
+  if (isNew) document.getElementById("newGroupName").focus();
+}
+document.getElementById("btnImportCancel").addEventListener("click", () => {
+  pendingFiles = [];
+  importModal.classList.remove("show");
+});
+document.getElementById("btnImportClose").addEventListener("click", () => {
+  importModal.classList.remove("show");
+});
+
+document.getElementById("btnImportGo").addEventListener("click", async () => {
+  let groupId = document.getElementById("importGroupSelect").value;
+  if (groupId === "__new__") {
+    const name = document.getElementById("newGroupName").value.trim();
+    if (!name) { document.getElementById("newGroupName").focus(); return; }
+    const g = {
+      id: uid(), name,
+      colour: document.getElementById("newGroupColour").value,
+      visible: true
+    };
+    groups.push(g);
+    await putGroup(g);
+    groupId = g.id;
+  }
+  openGroups.add(groupId);
+
+  document.getElementById("importPicker").style.display = "none";
+  document.getElementById("importProgress").style.display = "block";
+  const bar = document.getElementById("importBar");
+  const status = document.getElementById("importStatus");
+  bar.max = pendingFiles.length;
+
+  const parsed = [], failures = [];
+  for (let i = 0; i < pendingFiles.length; i++) {
+    const f = pendingFiles[i];
+    status.textContent = `Parsing ${i + 1} of ${pendingFiles.length}: ${f.name}`;
+    bar.value = i;
+    try {
+      const text = await f.text();
+      const p = parseGPX(text, f.name);
+      parsed.push({
+        id: uid(), groupId,
+        name: p.name, gpxText: text,
+        polyline: p.polyline, colourOverride: null,
+        stats: p.stats, visible: true
+      });
+    } catch (err) {
+      failures.push({ file: f.name, reason: err.message });
+    }
+    // yield to keep UI responsive
+    await new Promise(res => setTimeout(res, 0));
+  }
+  bar.value = pendingFiles.length;
+  status.textContent = "Saving…";
+
+  if (parsed.length) {
+    await bulkPutRoutes(parsed);
+    routes.push(...parsed);
+    parsed.forEach(addRouteLayer);
+  }
+
+  const summary = document.getElementById("importSummary");
+  summary.style.display = "block";
+  summary.innerHTML =
+    `<b>${parsed.length}</b> imported` +
+    (failures.length
+      ? `, <span class="fail"><b>${failures.length}</b> failed:</span><br>` +
+        failures.map(f => `<span class="fail">${escapeHTML(f.file)} — ${escapeHTML(f.reason)}</span>`).join("<br>")
+      : ".");
+  status.textContent = "";
+  document.getElementById("importDoneActions").style.display = "flex";
+
+  pendingFiles = [];
+  render();
+  if (parsed.length) fitRoutes(parsed);
+});
+
+/* Drag-and-drop onto the map */
+["dragover", "drop"].forEach(evt =>
+  document.addEventListener(evt, (e) => e.preventDefault()));
+document.addEventListener("drop", (e) => {
+  const files = [...e.dataTransfer.files].filter(f => /\.gpx$/i.test(f.name));
+  if (!files.length) return;
+  const input = document.getElementById("fileInput");
+  const dt = new DataTransfer();
+  files.forEach(f => dt.items.add(f));
+  input.files = dt.files;
+  input.dispatchEvent(new Event("change"));
+});
+
+/* ---------- Settings ---------- */
+const settingsModal = document.getElementById("settingsModal");
+document.getElementById("btnSettings").addEventListener("click", () => {
+  document.getElementById("osKeyInput").value = settings.osKey;
+  showModal(settingsModal);
+});
+document.getElementById("btnSettingsCancel").addEventListener("click", () =>
+  settingsModal.classList.remove("show"));
+document.getElementById("btnSettingsSave").addEventListener("click", () => {
+  settings.osKey = document.getElementById("osKeyInput").value.trim();
+  saveSettings();
+  setBaseLayer();
+  settingsModal.classList.remove("show");
+});
+document.getElementById("btnClearAll").addEventListener("click", async () => {
+  if (!confirm("Delete ALL routes and groups? This cannot be undone.")) return;
+  await tx("routes", "readwrite", s => s.clear());
+  await tx("groups", "readwrite", s => s.clear());
+  layerById.forEach(l => map.removeLayer(l));
+  layerById.clear();
+  routes = []; groups = []; openGroups.clear();
+  render();
+  settingsModal.classList.remove("show");
+});
+
+/* ---------- Misc UI ---------- */
+document.getElementById("btnFitAll").addEventListener("click", () => fitRoutes(routes));
+document.getElementById("btnHideSidebar").addEventListener("click", () => {
+  document.getElementById("sidebar").classList.add("collapsed");
+  document.body.classList.add("sidebar-hidden");
+  setTimeout(() => map.invalidateSize(), 50);
+});
+document.getElementById("sidebarToggle").addEventListener("click", () => {
+  document.getElementById("sidebar").classList.remove("collapsed");
+  document.body.classList.remove("sidebar-hidden");
+  setTimeout(() => map.invalidateSize(), 50);
+});
+document.querySelectorAll(".modal-backdrop").forEach(m =>
+  m.addEventListener("click", (e) => { if (e.target === m) m.classList.remove("show"); }));
+
+/* Only one modal at a time */
+function showModal(m) {
+  document.querySelectorAll(".modal-backdrop.show").forEach(x => x.classList.remove("show"));
+  m.classList.add("show");
+}
+
+/* ---------- Boot ---------- */
+(async function boot() {
+  const blocked = storageAvailable();
+  if (blocked) {
+    showBanner("This environment blocks browser storage (" + blocked + ").\n" +
+      "Download routeatlas.html and open it directly in Edge or Chrome — it will not run inside a preview sandbox.");
+    return;
+  }
+  try {
+    loadSettings();
+    db = await openDB();
+  } catch (e) {
+    showBanner("Storage failed to open: " + e.message +
+      "\nDownload the file and open it directly in Edge or Chrome.");
+    return;
+  }
+  groups = (await getAll("groups")).sort((a, b) => a.name.localeCompare(b.name));
+  routes = await getAll("routes");
+  initMap();
+  routes.forEach(addRouteLayer);
+  render();
+  if (routes.length) fitRoutes(routes);
+  if (!settings.osKey && !localStorage.getItem("routeatlas.keyPrompted")) {
+    localStorage.setItem("routeatlas.keyPrompted", "1");
+    document.getElementById("btnSettings").click();
+  }
+})();
+</script>
+</body>
+</html>
