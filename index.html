@@ -347,7 +347,7 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" crossorigin="anonymous"></script>
 <script>
 "use strict";
 
@@ -551,30 +551,38 @@ function initMap() {
 }
 let baseLayer = null;
 function setBaseLayer(forceOSM) {
-  if (baseLayer) { baseLayer.off(); map.removeLayer(baseLayer); }
+  if (baseLayer) {
+    baseLayer.off("tileerror");
+    try { map.removeLayer(baseLayer); } catch (e) { /* already detached */ }
+    baseLayer = null;
+  }
+  const label = document.getElementById("baseLayerLabel");
   if (settings.osKey && !forceOSM) {
     baseLayer = L.tileLayer(
       `https://api.os.uk/maps/raster/v1/zxy/Outdoor_3857/{z}/{x}/{y}.png?key=${encodeURIComponent(settings.osKey)}`,
       { maxZoom: 20, attribution: "Contains OS data &copy; Crown copyright and database rights " + new Date().getFullYear() }
     );
-    let errs = 0;
+    let errs = 0, fellBack = false;
     baseLayer.on("tileerror", () => {
-      if (++errs !== 3) return;   // a couple of stray failures are normal; 3 means the key is being refused
-      showBanner("OS Maps tiles are being refused. Check on osdatahub.os.uk that:\n" +
-        "1. You pasted the Project API Key (the secret is not needed)\n" +
-        "2. The OS Maps API is added to that project (Vector Tile API will not work)\n" +
-        "3. The key is a few minutes old — new keys take time to propagate\n" +
-        "Falling back to OpenStreetMap for now.");
-      setBaseLayer(true);
-      document.getElementById("baseLayerLabel").textContent = "OSM (OS key refused)";
+      if (++errs !== 3 || fellBack) return;   // a couple of stray failures are normal; 3 means the key is being refused
+      fellBack = true;
+      // Defer the layer swap — removing a layer inside its own tile event breaks Leaflet
+      setTimeout(() => {
+        setBaseLayer(true);
+        showBanner("OS Maps tiles are being refused. Check on osdatahub.os.uk that:\n" +
+          "1. You pasted the Project API Key (the secret is not needed)\n" +
+          "2. The OS Maps API is added to that project (Vector Tile API will not work)\n" +
+          "3. The key is a few minutes old — new keys take time to propagate\n" +
+          "Falling back to OpenStreetMap for now.");
+      }, 0);
     });
     baseLayer.addTo(map);
-    document.getElementById("baseLayerLabel").textContent = "OS Outdoor";
+    label.textContent = "OS Outdoor";
   } else {
     baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
       { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" });
     baseLayer.addTo(map);
-    if (!forceOSM) document.getElementById("baseLayerLabel").textContent = "OSM (no OS key)";
+    label.textContent = forceOSM ? "OSM (OS key refused)" : "OSM (no OS key)";
   }
 }
 
