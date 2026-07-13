@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RouteAtlas</title>
+<title>RouteAtlas v1.2.0</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
   :root {
@@ -273,7 +273,7 @@
 
 <aside id="sidebar">
   <header>
-    <h1>Route<span>Atlas</span></h1>
+    <h1>Route<span>Atlas</span> <small id="version" style="font-size:0.65rem;font-weight:400;color:var(--ink-soft);"></small></h1>
     <div class="sub">GPX route library · OS mapping</div>
   </header>
   <div class="toolbar">
@@ -282,6 +282,13 @@
     <button id="btnLabels" title="Show/hide route name labels">Labels</button>
     <button class="icon" id="btnSettings" title="Settings">&#9881;</button>
     <button class="icon" id="btnHideSidebar" title="Hide sidebar">&#171;</button>
+  </div>
+  <div class="toolbar" style="padding-top:0;">
+    <select id="baseSelect" title="Base map" style="flex:1;font:inherit;font-size:0.85rem;padding:5px 8px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;">
+      <option value="outdoor">Base: OS Outdoor</option>
+      <option value="leisure">Base: OS Leisure (Landranger/Explorer)</option>
+      <option value="osm">Base: OpenStreetMap</option>
+    </select>
   </div>
   <div id="groupList"></div>
   <footer>
@@ -348,6 +355,8 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4leaflet/1.0.2/proj4leaflet.min.js" crossorigin="anonymous"></script>
 <script>
 "use strict";
 
@@ -384,6 +393,7 @@ function storageAvailable() {
    ========================================================= */
 
 /* ---------- Constants ---------- */
+const VERSION = "1.2.0";
 const DB_NAME = "routeatlas";
 const DB_VERSION = 1;
 const LS_KEY = "routeatlas.settings";
@@ -399,7 +409,10 @@ let map = null;
 let groups = [];                  // [{id,name,colour,visible}]
 let routes = [];                  // [{id,groupId,name,gpxText,polyline,colourOverride,stats,visible}]
 let layerById = new Map();        // routeId -> L.polyline
-let settings = { osKey: "", labels: true };
+let settings = { osKey: "", labels: true, base: "outdoor" };
+let sessionBase = null;   // temporary override after OS refusal; not persisted
+const activeBase = () => sessionBase || settings.base || "outdoor";
+let mapIsBNG = false;     // current map CRS is EPSG:27700
 let pendingFiles = [];
 let openGroups = new Set();
 
@@ -545,45 +558,96 @@ const nextPaletteColour = () => PALETTE[groups.length % PALETTE.length];
 const fmtKm = (m) => (m / 1000).toFixed(1) + " km";
 
 /* ---------- Map ---------- */
-function initMap() {
-  map = L.map("map", { zoomControl: true }).setView([54.5, -2.5], 6);
+/* OS Leisure is served only in EPSG:27700 (British National Grid).
+   Zoom guide within Leisure: ~5–6 shows 1:50k Landranger, 7–9 shows 1:25k Explorer. */
+const BNG_RESOLUTIONS = [896, 448, 224, 112, 56, 28, 14, 7, 3.5, 1.75];
+function makeBNGCRS() {
+  return new L.Proj.CRS("EPSG:27700",
+    "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 " +
+    "+ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs",
+    { resolutions: BNG_RESOLUTIONS, origin: [-238375.0, 1376256.0] });
+}
+function needsBNG() { return activeBase() === "leisure" && !!settings.osKey; }
+
+function initMap(view) {
+  mapIsBNG = needsBNG();
+  const opts = { zoomControl: true };
+  if (mapIsBNG) opts.crs = makeBNGCRS();
+  map = L.map("map", opts);
+  if (view) map.setView(view.center, view.zoom, { animate: false });
+  else map.setView([54.5, -2.5], mapIsBNG ? 1 : 6, { animate: false });
   setBaseLayer();
 }
+
+/* Leaflet cannot change CRS on a live map — tear down and rebuild, preserving view */
+function rebuildMap() {
+  // Removing a map mid zoom-transition crashes queued animation frames (Leaflet #7133)
+  if (map._animatingZoom) {
+    map.once("zoomend", () => setTimeout(rebuildMap, 0));
+    return;
+  }
+  const center = map.getCenter(), zoom = map.getZoom();
+  const wasBNG = mapIsBNG, willBNG = needsBNG();
+  // EPSG:27700 zoom 0 ≈ EPSG:3857 zoom 7
+  let z = zoom;
+  if (wasBNG !== willBNG) z = willBNG ? Math.max(0, Math.min(9, zoom - 7))
+                                      : Math.max(1, Math.min(19, zoom + 7));
+  try { map.stop(); } catch (e) { /* no animation in flight */ }
+  try { map.remove(); } catch (e) { /* teardown race — container is rebuilt below anyway */ }
+  initMap({ center, zoom: z });
+  syncAllLayers();           // re-add visible polylines to the new map
+}
+
 let baseLayer = null;
-function setBaseLayer(forceOSM) {
+function setBaseLayer() {
   if (baseLayer) {
     baseLayer.off("tileerror");
     try { map.removeLayer(baseLayer); } catch (e) { /* already detached */ }
     baseLayer = null;
   }
   const label = document.getElementById("baseLayerLabel");
-  if (settings.osKey && !forceOSM) {
+  const base = activeBase();
+  const osAttrib = "Contains OS data &copy; Crown copyright and database rights " + new Date().getFullYear();
+
+  if (base === "leisure" && settings.osKey && mapIsBNG) {
+    baseLayer = L.tileLayer(
+      `https://api.os.uk/maps/raster/v1/zxy/Leisure_27700/{z}/{x}/{y}.png?key=${encodeURIComponent(settings.osKey)}`,
+      { maxZoom: BNG_RESOLUTIONS.length - 1, attribution: osAttrib });
+    attachOSErrorHandler("Leisure needs the Premium plan on osdatahub.os.uk (free up to \u00A31,000/month).");
+    label.textContent = "OS Leisure";
+  } else if (base === "outdoor" && settings.osKey) {
     baseLayer = L.tileLayer(
       `https://api.os.uk/maps/raster/v1/zxy/Outdoor_3857/{z}/{x}/{y}.png?key=${encodeURIComponent(settings.osKey)}`,
-      { maxZoom: 20, attribution: "Contains OS data &copy; Crown copyright and database rights " + new Date().getFullYear() }
-    );
-    let errs = 0, fellBack = false;
-    baseLayer.on("tileerror", () => {
-      if (++errs !== 3 || fellBack) return;   // a couple of stray failures are normal; 3 means the key is being refused
-      fellBack = true;
-      // Defer the layer swap — removing a layer inside its own tile event breaks Leaflet
-      setTimeout(() => {
-        setBaseLayer(true);
-        showBanner("OS Maps tiles are being refused. Check on osdatahub.os.uk that:\n" +
-          "1. You pasted the Project API Key (the secret is not needed)\n" +
-          "2. The OS Maps API is added to that project (Vector Tile API will not work)\n" +
-          "3. The key is a few minutes old — new keys take time to propagate\n" +
-          "Falling back to OpenStreetMap for now.");
-      }, 0);
-    });
-    baseLayer.addTo(map);
+      { maxZoom: 20, attribution: osAttrib });
+    attachOSErrorHandler("");
     label.textContent = "OS Outdoor";
   } else {
     baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
       { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" });
-    baseLayer.addTo(map);
-    label.textContent = forceOSM ? "OSM (OS key refused)" : "OSM (no OS key)";
+    label.textContent = sessionBase ? "OSM (OS key refused)"
+                      : (settings.osKey ? "OpenStreetMap" : "OSM (no OS key)");
+    if (base !== "osm" && !settings.osKey)
+      showBanner("An OS Maps API key is needed for the " + base + " style — add one in Settings. Showing OpenStreetMap.");
   }
+  baseLayer.addTo(map);
+}
+
+function attachOSErrorHandler(extraHint) {
+  let errs = 0, fellBack = false;
+  baseLayer.on("tileerror", () => {
+    if (++errs !== 3 || fellBack) return;   // a couple of stray failures are normal; 3 means the key is being refused
+    fellBack = true;
+    // Defer the layer swap — removing a layer inside its own tile event breaks Leaflet
+    setTimeout(() => {
+      sessionBase = "osm";
+      rebuildMap();
+      showBanner("OS Maps tiles are being refused. Check on osdatahub.os.uk that:\n" +
+        "1. You pasted the Project API Key (the secret is not needed)\n" +
+        "2. The OS Maps API is added to that project\n" +
+        (extraHint ? "3. " + extraHint + "\n" : "") +
+        "Falling back to OpenStreetMap for now.");
+    }, 0);
+  });
 }
 
 function routePopupHTML(r) {
@@ -906,8 +970,10 @@ document.getElementById("btnSettingsCancel").addEventListener("click", () =>
   settingsModal.classList.remove("show"));
 document.getElementById("btnSettingsSave").addEventListener("click", () => {
   settings.osKey = document.getElementById("osKeyInput").value.trim();
+  sessionBase = null;
   saveSettings();
-  setBaseLayer();
+  if (needsBNG() !== mapIsBNG) rebuildMap();
+  else setBaseLayer();
   settingsModal.classList.remove("show");
 });
 document.getElementById("btnClearAll").addEventListener("click", async () => {
@@ -922,6 +988,15 @@ document.getElementById("btnClearAll").addEventListener("click", async () => {
 });
 
 /* ---------- Misc UI ---------- */
+const baseSelect = document.getElementById("baseSelect");
+baseSelect.addEventListener("change", () => {
+  settings.base = baseSelect.value;
+  sessionBase = null;                    // user choice clears any refusal fallback
+  saveSettings();
+  if (needsBNG() !== mapIsBNG) rebuildMap();
+  else setBaseLayer();
+});
+
 document.getElementById("btnFitAll").addEventListener("click", () => fitRoutes(routes));
 const btnLabels = document.getElementById("btnLabels");
 function refreshLabelsButton() { btnLabels.style.opacity = settings.labels ? "1" : "0.45"; }
@@ -969,6 +1044,8 @@ function showModal(m) {
   groups = (await getAll("groups")).sort((a, b) => a.name.localeCompare(b.name));
   routes = await getAll("routes");
   initMap();
+  document.getElementById("version").textContent = "v" + VERSION;
+  baseSelect.value = settings.base || "outdoor";
   routes.forEach(addRouteLayer);
   refreshLabelsButton();
   render();
